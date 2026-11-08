@@ -588,6 +588,10 @@ void vk_mem_census(uint64_t frame) {
     Group g[64];
     int ng = 0;
     uint64_t total[4] = {0}, count[4] = {0};
+    // Imported pools no draw or dispatch has bound yet (vk_mem_resolve never resolved them): their host pages are
+    // still locked for the GPU. An upper bound on idle imports, since shaders that reach a pool only through a device
+    // address read from memory do not mark it used.
+    uint64_t idle_n = 0, idle_bytes = 0;
     plat_mutex_lock_shared(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) {
         const PoolRec *r = pool_index.e[i].buf;
@@ -596,8 +600,12 @@ void vk_mem_census(uint64_t frame) {
         if (j == ng && ng < 64) g[ng++] = (Group){r->kind, r->flags, 0, 0};
         if (j < ng) g[j].n++, g[j].bytes += r->size;
         total[r->kind] += r->size, count[r->kind]++;
+        if (r->kind == POOL_IMPORT && r->mem && !__atomic_load_n(&r->used, __ATOMIC_RELAXED))
+            idle_n++, idle_bytes += r->import_hi - r->import_lo;
     }
     plat_mutex_unlock_shared(&pool_lock);
+    rt_log("mem: imports never bound by a draw or dispatch: %llu pools, %.1f MiB of host pages kept for the GPU",
+           (unsigned long long)idle_n, idle_bytes / 1048576.0);
     rt_log("mem: census at frame %llu: import %llu pools %.1f MiB (%d without a GPU buffer), physical %llu pools %.1f MiB, "
            "virtual %llu pools %.1f MiB of address space",
            (unsigned long long)frame, (unsigned long long)count[POOL_IMPORT], total[POOL_IMPORT] / 1048576.0,
